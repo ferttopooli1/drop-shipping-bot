@@ -7,7 +7,7 @@ import subprocess
 
 async def generate_script_and_keywords(product_text: str, gemini_api_key: str) -> dict:
     """Usa a API do Gemini via REST para gerar o roteiro e palavras-chave para busca no Pexels."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
     
     prompt = f"""
     You are an expert short-form video copywriter for TikTok and Instagram Reels.
@@ -136,4 +136,4 @@ async def create_video_pipeline(product_text: str, config: dict, work_dir: str =
         "video_path": output_mp4,
         "caption": script_data.get("caption", ""),
         "script": script_data.get("script", "")
-  }
+    }
