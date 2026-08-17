@@ -80,6 +80,7 @@ cat <<EOF > $INSTALL_DIR/config.json
 {
   "bot_token": "$BOT_TOKEN",
   "admin_id": "$ADMIN_ID",
+  "language": "en",
   "gemini_api_key": "",
   "pexels_api_key": "",
   "social_accounts": {

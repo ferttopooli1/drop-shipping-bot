@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import subprocess
 import psutil
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -19,6 +20,12 @@ from video_engine import create_video_pipeline
 WAITING_API_VALUE = 1
 WAITING_PRODUCT_INPUT = 2
 
+LANG_LABELS = {
+    "en": "🇺🇸 English",
+    "pt": "🇧🇷 Português",
+    "es": "🇲🇽 Español",
+}
+
 
 def is_admin(user_id: int) -> bool:
     """Verifica se o usuário executando o comando é o administrador configurado."""
@@ -33,6 +40,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Acesso não autorizado.")
         return
 
+    cfg = load_config()
+    current_lang = LANG_LABELS.get(cfg.get("language", "en"), "🇺🇸 English")
+
     keyboard = [
         [
             InlineKeyboardButton("🎬 Gerar Vídeo", callback_data="menu_generate"),
@@ -42,10 +52,13 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📱 Redes Sociais", callback_data="menu_social"),
             InlineKeyboardButton("📊 Status da VM", callback_data="menu_status"),
         ],
+        [
+            InlineKeyboardButton(f"🌐 Idioma: {current_lang}", callback_data="menu_lang"),
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = "🚀 *Painel de Controle - Secret Cart Finds*\n\nSelecione uma opção abaixo:"
+    text = "🚀 *Painel de Controle - DropShipping Auto Video Bot*\n\nSelecione uma opção abaixo:"
 
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
@@ -74,7 +87,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")],
         ]
         await query.edit_message_text(
-            "🔑 *Configuração de Chaves de API*\n\nClique para alterar ou cadastrar:",
+            "🔑 *Configuração de Chaves de API*\n\nClique em uma opção abaixo para ver as instruções e alterar:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
@@ -89,8 +102,33 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")],
         ]
         await query.edit_message_text(
-            "📱 *Perfis de Postagem*\n\nConfigure onde os vídeos serão postados:",
+            "📱 *Perfis de Postagem*\n\nConfigure onde os vídeos serão postados automaticamente:",
             reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    elif data == "menu_lang":
+        keyboard = [
+            [
+                InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en"),
+                InlineKeyboardButton("🇧🇷 Português", callback_data="set_lang_pt"),
+                InlineKeyboardButton("🇲🇽 Español", callback_data="set_lang_es"),
+            ],
+            [InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")],
+        ]
+        await query.edit_message_text(
+            "🌐 *Selecione o Idioma do Vídeo e da Narração:*\n\n"
+            "O roteiro gerado pela IA e a voz neural seguirão o idioma escolhido.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    elif data.startswith("set_lang_"):
+        lang_code = data.replace("set_lang_", "")
+        update_config_key(["language"], lang_code)
+        selected_name = LANG_LABELS.get(lang_code, "English")
+        await query.edit_message_text(
+            f"✅ Idioma alterado para *{selected_name}* com sucesso!\n\nDigite /start para retornar.",
             parse_mode="Markdown",
         )
 
@@ -99,7 +137,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ram = psutil.virtual_memory().percent
         disk = psutil.disk_usage("/").percent
         status_msg = (
-            "📊 *Status do Servidor Ubuntu ARM*\n\n"
+            "📊 *Status do Servidor Ubuntu*\n\n"
             f"• *CPU:* {cpu}%\n"
             f"• *RAM:* {ram}%\n"
             f"• *Disco:* {disk}%\n"
@@ -115,15 +153,21 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "system_update":
+        bot_dir = os.path.dirname(os.path.abspath(__file__))
         await query.edit_message_text(
-            "🔄 *Baixando atualizações do GitHub e reiniciando o serviço...*\n\nAguarde alguns instantes e mande /start novamente em 10 segundos.",
+            "🔄 *Iniciando atualização inteligente do Bot...*\n\n"
+            "1. 📥 Baixando últimas atualizações do GitHub...\n"
+            "2. 📦 Verificando dependências em `requirements.txt`...\n"
+            "3. ⚙️ Reiniciando o serviço...",
             parse_mode="Markdown",
         )
-        # Executa o update e reinicia o serviço no systemd
-        subprocess.Popen(
-            "cd /opt/dropship-bot && git fetch --all && git reset --hard origin/main && sudo systemctl restart dropship-bot",
-            shell=True,
-        )
+        
+        update_cmd = f"cd \"{bot_dir}\" && git fetch --all && git reset --hard origin/main"
+        if os.path.exists(os.path.join(bot_dir, "requirements.txt")):
+            update_cmd += " && pip install -r requirements.txt -q"
+        update_cmd += " && (sudo systemctl restart dropship-bot || echo 'Serviço reiniciado')"
+        
+        subprocess.Popen(update_cmd, shell=True)
 
     elif data == "menu_main":
         await start_cmd(update, context)
@@ -169,7 +213,7 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     msg_status = await update.message.reply_text(
-        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro em inglês via Gemini 3.5...\n2. 🎙️ Sintetizando narração neural...\n3. 🎬 Baixando B-roll e renderizando MP4 com FFmpeg...",
+        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro via Gemini 3.5...\n2. 🎙️ Sintetizando narração neural e legendas...\n3. 🎬 Baixando B-roll e renderizando MP4...",
         parse_mode="Markdown",
     )
 
@@ -204,23 +248,55 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
-# --- FLUXO DE CONFIGURAÇÃO DE APIS ---
+# --- FLUXO DE CONFIGURAÇÃO DE APIS COM TUTORIAIS ---
 async def ask_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Pede o valor da chave de API ou credencial ao usuário."""
+    """Pede a chave ou credencial ao usuário com tutorial detalhado."""
     query = update.callback_query
     await query.answer()
     field = query.data.replace("set_", "")
     context.user_data["editing_field"] = field
 
-    names = {
-        "gemini": "Google Gemini API Key",
-        "pexels": "Pexels API Key",
-        "yt": "YouTube Channel ID / Token",
-        "tiktok": "TikTok Session ID",
+    tutorials = {
+        "gemini": (
+            "🔑 *Como obter a Google Gemini API Key:*\n\n"
+            "1️⃣ Acesse o portal do [Google AI Studio](https://aistudio.google.com/app/apikey).\n"
+            "2️⃣ Faça login com sua conta do Google.\n"
+            "3️⃣ Clique no botão **'Create API key'**.\n"
+            "4️⃣ Copie a chave (ex: `AIzaSy...`) e **responda enviando-a aqui nesta conversa**.\n\n"
+            "_(Envie /cancelar a qualquer momento para retornar)_"
+        ),
+        "pexels": (
+            "🔑 *Como obter a Pexels API Key:*\n\n"
+            "1️⃣ Acesse o [Pexels API Documentation](https://www.pexels.com/api/).\n"
+            "2️⃣ Crie uma conta gratuita ou faça login.\n"
+            "3️⃣ Clique no botão **'Your API Key'** (ou solicite acesso gratuito).\n"
+            "4️⃣ Copie a chave alfanumérica e **responda enviando-a aqui nesta conversa**.\n\n"
+            "_(Envie /cancelar a qualquer momento para retornar)_"
+        ),
+        "yt": (
+            "📱 *Como obter as credenciais do YouTube Shorts:*\n\n"
+            "1️⃣ Acesse o [Google Cloud Console API Credentials](https://console.cloud.google.com/apis/credentials).\n"
+            "2️⃣ Ative a **YouTube Data API v3** no seu projeto.\n"
+            "3️⃣ Crie uma credencial **OAuth 2.0 Client ID**.\n"
+            "4️⃣ Copie seu **ID do Canal** ou **Token** e responda enviando-o aqui.\n\n"
+            "_(Envie /cancelar a qualquer momento para retornar)_"
+        ),
+        "tiktok": (
+            "📱 *Como obter o TikTok Session ID:*\n\n"
+            "1️⃣ Acesse o [TikTok Web](https://www.tiktok.com) no computador e faça login.\n"
+            "2️⃣ Pressione `F12` para abrir o DevTools -> vá na aba **Application / Armazenamento**.\n"
+            "3️⃣ Clique em **Cookies** -> `https://www.tiktok.com`.\n"
+            "4️⃣ Procure pelo cookie `sessionid` ou `sessionid_ss`, copie o valor e envie aqui.\n\n"
+            "_(Envie /cancelar a qualquer momento para retornar)_"
+        ),
     }
+
+    prompt_text = tutorials.get(field, f"Envie agora o valor para *{field}*:\n(Ou /cancelar)")
+
     await query.message.reply_text(
-        f"Envie agora o valor para: *{names.get(field, field)}*.\n(Ou /cancelar)",
+        prompt_text,
         parse_mode="Markdown",
+        disable_web_page_preview=True,
     )
     return WAITING_API_VALUE
 
@@ -245,7 +321,7 @@ async def save_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     await update.message.reply_text(
-        f"✅ *{field.upper()}* salvo com sucesso!\nDigite /start para voltar ao menu.",
+        f"✅ Credencial de *{field.upper()}* salva com sucesso!\nDigite /start para voltar ao menu.",
         parse_mode="Markdown",
     )
     return ConversationHandler.END
@@ -262,7 +338,7 @@ def main():
     cfg = load_config()
     token = cfg.get("bot_token")
     if not token:
-        print("ERRO: bot_token não configurado.")
+        print("ERRO: bot_token não configurado no config.json.")
         return
 
     app = ApplicationBuilder().token(token).build()
@@ -284,7 +360,7 @@ def main():
     app.add_handler(
         CallbackQueryHandler(
             menu_callback,
-            pattern="^menu_(apis|social|status|main)|post_video|discard_video|system_update$",
+            pattern="^menu_(apis|social|status|main|lang)|set_lang_|post_video|discard_video|system_update$",
         )
     )
 

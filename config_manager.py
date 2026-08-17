@@ -6,9 +6,15 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
 def load_config():
   if not os.path.exists(CONFIG_PATH):
-    return {}
-  with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    return json.load(f)
+    cfg = {}
+  else:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+      cfg = json.load(f)
+  if "language" not in cfg:
+    cfg["language"] = "en"
+  if "social_accounts" not in cfg:
+    cfg["social_accounts"] = {}
+  return cfg
 
 
 def save_config(config_data):

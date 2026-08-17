@@ -1,0 +1,17 @@
+# Config e dados sensíveis
+config.json
+config.json.bak
+.vscode/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Arquivos temporários de vídeo e mídia
+*.mp4
+*.mp3
+*.srt
+concat.txt
+clips/
+video_work/
