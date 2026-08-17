@@ -1,0 +1,139 @@
+import os
+import json
+import asyncio
+import requests
+import edge_tts
+import subprocess
+
+async def generate_script_and_keywords(product_text: str, gemini_api_key: str) -> dict:
+    """Usa a API do Gemini via REST para gerar o roteiro e palavras-chave para busca no Pexels."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+    
+    prompt = f"""
+    You are an expert short-form video copywriter for TikTok and Instagram Reels.
+    Create a viral 30-second script in English for this product: "{product_text}".
+    
+    Respond STRICTLY with a JSON object in this exact format (no markdown code blocks, just raw JSON):
+    {{
+        "hook": "Hook sentence (0-3s)",
+        "script": "Full script to be read aloud (30s)",
+        "keywords": ["keyword1", "keyword2", "keyword3"],
+        "caption": "TikTok caption with hashtags"
+    }}
+    """
+    
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json"}
+    
+    response = requests.post(url, json=payload, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    
+    raw_text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        
+    return json.loads(raw_text)
+
+async def generate_audio(text: str, output_path: str):
+    """Gera áudio neural em inglês usando edge-tts."""
+    communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
+    await communicate.save(output_path)
+
+def download_broll_clips(keywords: list, pexels_api_key: str, output_dir: str) -> list:
+    """Busca e baixa clipes de vídeo verticais no Pexels."""
+    headers = {"Authorization": pexels_api_key}
+    downloaded_files = []
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for i, kw in enumerate(keywords[:3]):
+        url = f"https://api.pexels.com/videos/search?query={kw}&orientation=portrait&per_page=2"
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            vdata = res.json()
+            videos = vdata.get("videos", [])
+            if videos:
+                video_files = videos[0].get("video_files", [])
+                hd_file = next((f for f in video_files if f.get("width", 0) >= 720 and f.get("link", "").endswith(".mp4")), None)
+                if not hd_file and video_files:
+                    hd_file = video_files[0]
+                
+                if hd_file:
+                    v_url = hd_file.get("link")
+                    v_path = os.path.join(output_dir, f"clip_{i}.mp4")
+                    v_res = requests.get(v_url, stream=True, timeout=30)
+                    with open(v_path, 'wb') as f:
+                        for chunk in v_res.iter_content(chunk_size=1024*1024):
+                            f.write(chunk)
+                    downloaded_files.append(v_path)
+    return downloaded_files
+
+def render_final_video(audio_path: str, video_clips: list, output_mp4: str) -> bool:
+    """Usa o FFmpeg para unir os clipes no formato 9:16 (1080x1920) e sincronizar o áudio."""
+    if not video_clips:
+        return False
+        
+    # Obtém a duração do áudio usando ffprobe
+    duration_cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+    ]
+    audio_duration = float(subprocess.check_output(duration_cmd).decode().strip())
+    
+    concat_list_path = os.path.join(os.path.dirname(output_mp4), "concat.txt")
+    with open(concat_list_path, "w") as f:
+        for clip in video_clips:
+            f.write(f"file '{os.path.abspath(clip)}'\n")
+            
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0", "-i", concat_list_path,
+        "-i", audio_path,
+        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-t", str(audio_duration),
+        "-shortest",
+        output_mp4
+    ]
+    
+    subprocess.run(ffmpeg_cmd, check=True)
+    return os.path.exists(output_mp4)
+
+async def create_video_pipeline(product_text: str, config: dict, work_dir: str = "/tmp/video_work"):
+    """Orquestra o pipeline completo de geração de vídeo."""
+    os.makedirs(work_dir, exist_ok=True)
+    
+    gemini_key = config.get("gemini_api_key")
+    pexels_key = config.get("pexels_api_key")
+    
+    if not gemini_key or not pexels_key:
+        raise ValueError("Chaves de API do Gemini e do Pexels são obrigatórias em /start -> Configurar APIs.")
+        
+    # 1. Roteiro e palavras-chave
+    script_data = await generate_script_and_keywords(product_text, gemini_key)
+    
+    # 2. Gera áudio
+    audio_path = os.path.join(work_dir, "narration.mp3")
+    await generate_audio(script_data["script"], audio_path)
+    
+    # 3. Baixa B-roll
+    clips_dir = os.path.join(work_dir, "clips")
+    video_clips = download_broll_clips(script_data["keywords"], pexels_key, clips_dir)
+    
+    if not video_clips:
+        raise RuntimeError("Não foi possível baixar clipes no Pexels com as palavras-chave geradas.")
+        
+    # 4. Renderiza vídeo
+    output_mp4 = os.path.join(work_dir, "final_render.mp4")
+    success = render_final_video(audio_path, video_clips, output_mp4)
+    
+    if not success:
+        raise RuntimeError("Falha ao renderizar com o FFmpeg.")
+        
+    return {
+        "video_path": output_mp4,
+        "caption": script_data.get("caption", ""),
+        "script": script_data.get("script", "")
+  }
