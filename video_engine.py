@@ -1,25 +1,50 @@
-import os
-import json
 import asyncio
-import requests
-import edge_tts
+import json
+import os
+import re
 import subprocess
+import requests
+
+def resolve_url(url: str) -> str:
+    """Resolve URLs encurtadas (ex: amzn.to) para obter a URL final com o nome do produto."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        res = requests.head(url, headers=headers, allow_redirects=True, timeout=10)
+        return res.url
+    except Exception:
+        return url
+
+def extract_product_keywords(text_or_url: str) -> str:
+    """Extrai um nome amigável do produto a partir de um link ou texto."""
+    if "http://" in text_or_url or "https://" in text_or_url:
+        final_url = resolve_url(text_or_url)
+        clean_text = re.sub(r'https?://[^/]+/', '', final_url)
+        clean_text = re.sub(r'[?#/].*', '', clean_text)
+        clean_text = clean_text.replace('-', ' ').replace('_', ' ')
+        return clean_text if clean_text.strip() else "viral product"
+    return text_or_url
 
 async def generate_script_and_keywords(product_text: str, gemini_api_key: str) -> dict:
-    """Usa a API do Gemini via REST para gerar o roteiro e palavras-chave para busca no Pexels."""
+    """Usa a API do Gemini 3.5 Flash para gerar roteiro e palavras-chave para busca no Pexels."""
+    product_name = extract_product_keywords(product_text)
+    
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
     
     prompt = f"""
     You are an expert short-form video copywriter for TikTok and Instagram Reels.
-    Create a viral 30-second script in English for this product: "{product_text}".
+    Create a viral 30-second script in English for this product: "{product_name}".
     
-    Respond STRICTLY with a JSON object in this exact format (no markdown code blocks, just raw JSON):
+    Respond STRICTLY with a JSON object in this exact format (no markdown, no code blocks, just raw JSON):
     {{
         "hook": "Hook sentence (0-3s)",
         "script": "Full script to be read aloud (30s)",
-        "keywords": ["keyword1", "keyword2", "keyword3"],
+        "keywords": ["simple_single_word1", "simple_single_word2", "simple_single_word3"],
         "caption": "TikTok caption with hashtags"
     }}
+
+    IMPORTANT for "keywords": Use single, common English search terms (e.g., "kitchen", "cleaning", "gadget", "snack", "technology", "home"). Do not use specific brand names or long phrases.
     """
     
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -37,36 +62,52 @@ async def generate_script_and_keywords(product_text: str, gemini_api_key: str) -
 
 async def generate_audio(text: str, output_path: str):
     """Gera áudio neural em inglês usando edge-tts."""
+    import edge_tts
     communicate = edge_tts.Communicate(text, "en-US-ChristopherNeural")
     await communicate.save(output_path)
 
 def download_broll_clips(keywords: list, pexels_api_key: str, output_dir: str) -> list:
-    """Busca e baixa clipes de vídeo verticais no Pexels."""
+    """Busca e baixa clipes de vídeo verticais no Pexels com lista de reserva em caso de falha."""
     headers = {"Authorization": pexels_api_key}
     downloaded_files = []
     
     os.makedirs(output_dir, exist_ok=True)
     
-    for i, kw in enumerate(keywords[:3]):
-        url = f"https://api.pexels.com/videos/search?query={kw}&orientation=portrait&per_page=2"
-        res = requests.get(url, headers=headers, timeout=15)
-        if res.status_code == 200:
-            vdata = res.json()
-            videos = vdata.get("videos", [])
-            if videos:
-                video_files = videos[0].get("video_files", [])
-                hd_file = next((f for f in video_files if f.get("width", 0) >= 720 and f.get("link", "").endswith(".mp4")), None)
-                if not hd_file and video_files:
-                    hd_file = video_files[0]
-                
-                if hd_file:
-                    v_url = hd_file.get("link")
-                    v_path = os.path.join(output_dir, f"clip_{i}.mp4")
-                    v_res = requests.get(v_url, stream=True, timeout=30)
-                    with open(v_path, 'wb') as f:
-                        for chunk in v_res.iter_content(chunk_size=1024*1024):
-                            f.write(chunk)
-                    downloaded_files.append(v_path)
+    # Adiciona palavras-chave de reserva (fallback)
+    search_queries = list(keywords) + ["gadget", "technology", "shopping", "home"]
+    
+    clip_index = 0
+    for kw in search_queries:
+        if len(downloaded_files) >= 3:
+            break
+            
+        url = f"https://api.pexels.com/videos/search?query={kw}&orientation=portrait&per_page=3"
+        try:
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                vdata = res.json()
+                videos = vdata.get("videos", [])
+                for v in videos:
+                    video_files = v.get("video_files", [])
+                    hd_file = next((f for f in video_files if f.get("width", 0) >= 720 and f.get("link", "").endswith(".mp4")), None)
+                    if not hd_file and video_files:
+                        hd_file = video_files[0]
+                    
+                    if hd_file:
+                        v_url = hd_file.get("link")
+                        v_path = os.path.join(output_dir, f"clip_{clip_index}.mp4")
+                        v_res = requests.get(v_url, stream=True, timeout=30)
+                        if v_res.status_code == 200:
+                            with open(v_path, 'wb') as f:
+                                for chunk in v_res.iter_content(chunk_size=1024*1024):
+                                    f.write(chunk)
+                            downloaded_files.append(v_path)
+                            clip_index += 1
+                            if len(downloaded_files) >= 3:
+                                break
+        except Exception:
+            continue
+            
     return downloaded_files
 
 def render_final_video(audio_path: str, video_clips: list, output_mp4: str) -> bool:
@@ -74,7 +115,6 @@ def render_final_video(audio_path: str, video_clips: list, output_mp4: str) -> b
     if not video_clips:
         return False
         
-    # Obtém a duração do áudio usando ffprobe
     duration_cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", audio_path
