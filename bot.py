@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import psutil
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -18,11 +19,15 @@ from video_engine import create_video_pipeline
 WAITING_API_VALUE = 1
 WAITING_PRODUCT_INPUT = 2
 
+
 def is_admin(user_id: int) -> bool:
+    """Verifica se o usuário executando o comando é o administrador configurado."""
     cfg = load_config()
     return str(user_id) == str(cfg.get("admin_id"))
 
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Exibe o painel de controle principal do bot."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("⛔ Acesso não autorizado.")
@@ -39,21 +44,17 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
+    text = "🚀 *Painel de Controle - Secret Cart Finds*\n\nSelecione uma opção abaixo:"
+
     if update.message:
-        await update.message.reply_text(
-            "🚀 *Painel de Controle - Secret Cart Finds*\n\nSelecione uma opção abaixo:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
     elif update.callback_query:
-        await update.callback_query.edit_message_text(
-            "🚀 *Painel de Controle - Secret Cart Finds*\n\nSelecione uma opção abaixo:",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gerencia as interações dos menus e botões inline."""
     query = update.callback_query
     await query.answer()
 
@@ -75,7 +76,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🔑 *Configuração de Chaves de API*\n\nClique para alterar ou cadastrar:",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     elif data == "menu_social":
@@ -90,7 +91,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "📱 *Perfis de Postagem*\n\nConfigure onde os vídeos serão postados:",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     elif data == "menu_status":
@@ -103,11 +104,25 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• *RAM:* {ram}%\n"
             f"• *Disco:* {disk}%\n"
         )
-        keyboard = [[InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")]]
+        keyboard = [
+            [InlineKeyboardButton("🔄 Atualizar Bot (Git Pull)", callback_data="system_update")],
+            [InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")],
+        ]
         await query.edit_message_text(
             status_msg,
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+        )
+
+    elif data == "system_update":
+        await query.edit_message_text(
+            "🔄 *Baixando atualizações do GitHub e reiniciando o serviço...*\n\nAguarde alguns instantes e mande /start novamente em 10 segundos.",
+            parse_mode="Markdown",
+        )
+        # Executa o update e reinicia o serviço no systemd
+        subprocess.Popen(
+            "cd /opt/dropship-bot && git fetch --all && git reset --hard origin/main && sudo systemctl restart dropship-bot",
+            shell=True,
         )
 
     elif data == "menu_main":
@@ -116,42 +131,46 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "post_video":
         await query.edit_message_caption(
             caption="🚀 *Vídeo aprovado e enviado para a fila de publicação automatizada!*",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     elif data == "discard_video":
         await query.edit_message_caption(
             caption="🗑️ *Vídeo descartado.*",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
+
 
 # --- FLUXO DE GERAR VÍDEO ---
 async def prompt_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Solicita o link ou nome do produto ao usuário."""
     query = update.callback_query
     await query.answer()
-    
+
     await query.message.reply_text(
         "📦 *Envie o Produto*\n\n"
         "Envie o **link da Amazon/AliExpress** ou digite o **nome do produto** com uma breve descrição.\n\n"
         "_(Envie /cancelar para voltar ao menu)_",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
     return WAITING_PRODUCT_INPUT
 
+
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Processa o produto enviado e chama a pipeline do video_engine."""
     product_text = update.message.text.strip()
     cfg = load_config()
 
     if not cfg.get("gemini_api_key") or not cfg.get("pexels_api_key"):
         await update.message.reply_text(
             "⚠️ *Atenção:* Por favor, defina a Gemini API Key e Pexels API Key no menu **⚙️ Configurar APIs** antes de gerar um vídeo.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     msg_status = await update.message.reply_text(
-        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro em inglês via Gemini...\n2. 🎙️ Sintetizando narração via edge-tts...\n3. 🎬 Baixando B-roll e renderizando MP4 com FFmpeg...",
-        parse_mode="Markdown"
+        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro em inglês via Gemini 3.5...\n2. 🎙️ Sintetizando narração neural...\n3. 🎬 Baixando B-roll e renderizando MP4 com FFmpeg...",
+        parse_mode="Markdown",
     )
 
     try:
@@ -162,10 +181,10 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = [
             [
                 InlineKeyboardButton("🚀 Aprovar e Postar", callback_data="post_video"),
-                InlineKeyboardButton("❌ Descartar", callback_data="discard_video")
+                InlineKeyboardButton("❌ Descartar", callback_data="discard_video"),
             ]
         ]
-        
+
         await msg_status.delete()
 
         with open(video_path, "rb") as video_file:
@@ -173,19 +192,21 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
                 video=video_file,
                 caption=f"🎬 *Preview do Vídeo Renderizado*\n\n📝 *Legenda recomendada:*\n{caption_text}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
 
     except Exception as e:
         await msg_status.edit_text(
             f"❌ *Erro durante o processamento:* {str(e)}",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
 
     return ConversationHandler.END
 
+
 # --- FLUXO DE CONFIGURAÇÃO DE APIS ---
 async def ask_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pede o valor da chave de API ou credencial ao usuário."""
     query = update.callback_query
     await query.answer()
     field = query.data.replace("set_", "")
@@ -199,11 +220,13 @@ async def ask_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await query.message.reply_text(
         f"Envie agora o valor para: *{names.get(field, field)}*.\n(Ou /cancelar)",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
     return WAITING_API_VALUE
 
+
 async def save_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Salva a chave/credencial enviada e remove a mensagem contendo o dado sensível."""
     value = update.message.text.strip()
     field = context.user_data.get("editing_field")
 
@@ -223,15 +246,19 @@ async def save_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ *{field.upper()}* salvo com sucesso!\nDigite /start para voltar ao menu.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
     return ConversationHandler.END
 
+
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancela o fluxo atual e limpa o estado."""
     await update.message.reply_text("Operação cancelada. Digite /start para o menu.")
     return ConversationHandler.END
 
+
 def main():
+    """Inicializa e roda o bot do Telegram."""
     cfg = load_config()
     token = cfg.get("bot_token")
     if not token:
@@ -243,7 +270,7 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(prompt_product_input, pattern="^menu_generate$"),
-            CallbackQueryHandler(ask_api_input, pattern="^set_(gemini|pexels|yt|tiktok)$")
+            CallbackQueryHandler(ask_api_input, pattern="^set_(gemini|pexels|yt|tiktok)$"),
         ],
         states={
             WAITING_API_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_api_input)],
@@ -254,10 +281,16 @@ def main():
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_(apis|social|status|main|post_video|discard_video)$"))
+    app.add_handler(
+        CallbackQueryHandler(
+            menu_callback,
+            pattern="^menu_(apis|social|status|main)|post_video|discard_video|system_update$",
+        )
+    )
 
     print("Bot rodando...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
