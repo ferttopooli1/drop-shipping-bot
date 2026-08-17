@@ -12,6 +12,7 @@ from telegram.ext import (
     filters,
 )
 from config_manager import load_config, update_config_key
+from video_engine import create_video_pipeline
 
 # Estados do ConversationHandler
 WAITING_API_VALUE = 1
@@ -39,7 +40,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Suporta chamada tanto por comando /start quanto por callback de botão "Voltar"
     if update.message:
         await update.message.reply_text(
             "🚀 *Painel de Controle - Secret Cart Finds*\n\nSelecione uma opção abaixo:",
@@ -113,6 +113,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_main":
         await start_cmd(update, context)
 
+    elif data == "post_video":
+        await query.edit_message_caption(
+            caption="🚀 *Vídeo aprovado e enviado para a fila de publicação automatizada!*",
+            parse_mode="Markdown"
+        )
+
+    elif data == "discard_video":
+        await query.edit_message_caption(
+            caption="🗑️ *Vídeo descartado.*",
+            parse_mode="Markdown"
+        )
+
 # --- FLUXO DE GERAR VÍDEO ---
 async def prompt_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -128,21 +140,48 @@ async def prompt_product_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     product_text = update.message.text.strip()
-    
+    cfg = load_config()
+
+    if not cfg.get("gemini_api_key") or not cfg.get("pexels_api_key"):
+        await update.message.reply_text(
+            "⚠️ *Atenção:* Por favor, defina a Gemini API Key e Pexels API Key no menu **⚙️ Configurar APIs** antes de gerar um vídeo.",
+            parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
     msg_status = await update.message.reply_text(
-        "⏳ *Processando produto...*\n\n1. 🧠 Gerando roteiro em inglês com IA...\n2. 🎙️ Criando voz neural...\n3. 🎬 Renderizando com FFmpeg...",
+        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro em inglês via Gemini...\n2. 🎙️ Sintetizando narração via edge-tts...\n3. 🎬 Baixando B-roll e renderizando MP4 com FFmpeg...",
         parse_mode="Markdown"
     )
 
-    # Aqui é chamada a função do motor (ex: video_engine.generate_video(product_text))
-    # Exemplo simulado de resposta:
-    await asyncio.sleep(2)
-    
-    await msg_status.edit_text(
-        f"✅ *Vídeo gerado para o produto:*\n`{product_text}`\n\n"
-        "🚀 Pronto para postar!",
-        parse_mode="Markdown"
-    )
+    try:
+        result = await create_video_pipeline(product_text, cfg)
+        video_path = result["video_path"]
+        caption_text = result["caption"]
+
+        keyboard = [
+            [
+                InlineKeyboardButton("🚀 Aprovar e Postar", callback_data="post_video"),
+                InlineKeyboardButton("❌ Descartar", callback_data="discard_video")
+            ]
+        ]
+        
+        await msg_status.delete()
+
+        with open(video_path, "rb") as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption=f"🎬 *Preview do Vídeo Renderizado*\n\n📝 *Legenda recomendada:*\n{caption_text}",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+    except Exception as e:
+        await msg_status.edit_text(
+            f"❌ *Erro durante o processamento:* {str(e)}",
+            parse_mode="Markdown"
+        )
+
     return ConversationHandler.END
 
 # --- FLUXO DE CONFIGURAÇÃO DE APIS ---
@@ -201,7 +240,6 @@ def main():
 
     app = ApplicationBuilder().token(token).build()
 
-    # Handler unificado para geração de vídeo e preenchimento de APIs
     conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(prompt_product_input, pattern="^menu_generate$"),
@@ -216,7 +254,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_(apis|social|status|main)$"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_(apis|social|status|main|post_video|discard_video)$"))
 
     print("Bot rodando...")
     app.run_polling()
