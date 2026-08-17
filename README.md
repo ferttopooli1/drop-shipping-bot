@@ -32,4 +32,4 @@ Sistema 100% automatizado e autônomo para geração de vídeos curtos (TikTok, 
 Para instalar o bot em qualquer servidor Ubuntu recém-criado (ou PC local), execute o comando abaixo no terminal:
 
 ```bash
-curl -sSL [https://raw.githubusercontent.com/ferttopooli1/drop-shipping-bot/main/install.sh](https://raw.githubusercontent.com/ferttopooli1/drop-shipping-bot/main/install.sh) | bash
+git clone https://github.com/ferttopooli1/drop-shipping-bot.git && cd drop-shipping-bot && chmod +x install.sh && ./install.sh
