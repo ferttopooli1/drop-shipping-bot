@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import subprocess
+import re
 import psutil
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -191,24 +192,106 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# --- HELPER DE PARSING DE MENSAGEM PADRÃO ---
+def parse_standard_product_msg(text: str) -> dict:
+    """Extrai nome do produto, breve descrição e link de afiliado de uma mensagem enviada."""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+
+    name = ""
+    description = ""
+    link = ""
+
+    # Tenta extrair usando palavras-chave/rótulos comuns (ex: Nome:, Descrição:, Link:)
+    for line in lines:
+        url_match = re.search(r"https?://[^\s]+", line)
+        if url_match and not link:
+            link = url_match.group(0)
+
+        if not name:
+            match_name = re.match(r"^(?:📌\s*)?(?:nome(?:\s+do\s+produto)?|product(?:\s+name)?|produto|title|título)\s*[:\-]\s*(.+)$", line, re.IGNORECASE)
+            if match_name:
+                name = match_name.group(1).strip()
+                continue
+
+        if not description:
+            match_desc = re.match(r"^(?:📝\s*)?(?:descriç[ãa]o(?:\s+breve)?|description|desc|sobre|detalhes|benef[íi]cios)\s*[:\-]\s*(.+)$", line, re.IGNORECASE)
+            if match_desc:
+                description = match_desc.group(1).strip()
+                continue
+
+        if not link:
+            match_link = re.match(r"^(?:🔗\s*)?(?:link(?:\s+de\s+afiliado)?|url)\s*[:\-]\s*(.+)$", line, re.IGNORECASE)
+            if match_link:
+                potential_link = match_link.group(1).strip()
+                url_m = re.search(r"https?://[^\s]+", potential_link)
+                if url_m:
+                    link = url_m.group(0)
+                else:
+                    link = potential_link
+
+    # Se a URL ainda não foi capturada, busca em todo o texto
+    if not link:
+        url_match = re.search(r"https?://[^\s]+", text)
+        if url_match:
+            link = url_match.group(0)
+
+    # Fallback se não usou os rótulos Nome: / Descrição:
+    if not name:
+        for line in lines:
+            if not re.search(r"https?://[^\s]+", line) and not re.match(r"^(?:🔗\s*)?(?:link|url)", line, re.IGNORECASE):
+                clean_line = re.sub(r"^[\*\-\•\d\.\s]+", "", line).strip()
+                if clean_line:
+                    name = clean_line
+                    break
+
+    if not description:
+        desc_lines = []
+        for line in lines:
+            clean_line = re.sub(r"^[\*\-\•\d\.\s]+", "", line).strip()
+            if clean_line and clean_line != name and not re.search(r"https?://[^\s]+", line) and not re.match(r"^(?:🔗|📌|📝)?\s*(?:link|url)", line, re.IGNORECASE):
+                desc_lines.append(clean_line)
+        description = " ".join(desc_lines).strip()
+
+    if not name:
+        name = "Produto Viral"
+
+    return {
+        "name": name,
+        "description": description,
+        "link": link,
+        "raw_text": text,
+    }
+
+
 # --- FLUXO DE GERAR VÍDEO ---
 async def prompt_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Solicita o link ou nome do produto ao usuário."""
+    """Solicita as informações do produto no modelo padrão ao usuário."""
     query = update.callback_query
     await query.answer()
 
+    template_text = (
+        "📦 *Geração de Vídeo - Envie os Dados do Produto*\n\n"
+        "Envie uma mensagem contendo as seguintes informações do produto:\n\n"
+        "📌 *Nome do produto*\n"
+        "📝 *Breve descrição* (benefícios, diferenciais, uso)\n"
+        "🔗 *Link de afiliado*\n\n"
+        "📋 *Exemplo de mensagem padrão (copie e preencha):*\n\n"
+        "`Nome: Mini Mop Portátil`\n"
+        "`Descrição: Limpa superfícies rapidamente, super absorvente e prático para cozinha e banheiros.`\n"
+        "`Link: https://amzn.to/3example`\n\n"
+        "_(Envie /cancelar para voltar ao menu)_"
+    )
+
     await query.message.reply_text(
-        "📦 *Envie o Produto ou Link de Afiliado*\n\n"
-        "Envie o **link da Amazon/AliExpress** (link de afiliado) ou digite o **nome do produto**.\n\n"
-        "_(Envie /cancelar para voltar ao menu)_",
+        template_text,
         parse_mode="Markdown",
     )
     return WAITING_PRODUCT_INPUT
 
 
 async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Processa o produto enviado e chama a pipeline do video_engine."""
-    product_text = update.message.text.strip()
+    """Processa a mensagem do produto enviada e chama a pipeline do video_engine."""
+    raw_text = update.message.text.strip()
     cfg = load_config()
 
     if not cfg.get("gemini_api_key"):
@@ -218,16 +301,18 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ConversationHandler.END
 
+    product_data = parse_standard_product_msg(raw_text)
+
     msg_status = await update.message.reply_text(
-        "⏳ *Gerando vídeo com IA Pollinations...*\n\n"
-        "1. 🧠 Criando roteiro e visuais do produto via Gemini...\n"
+        f"⏳ *Gerando vídeo para '{product_data['name']}'...*\n\n"
+        "1. 🧠 Criando roteiro persuasivo e visuais via Gemini...\n"
         "2. 🎨 Gerando imagens de IA 1080x1920 via Pollinations.ai...\n"
         "3. 🎙️ Sintetizando narração neural, legendas e animação Ken Burns 3D...",
         parse_mode="Markdown",
     )
 
     try:
-        result = await create_video_pipeline(product_text, cfg)
+        result = await create_video_pipeline(product_data, cfg)
         video_path = result["video_path"]
         caption_text = result["caption"]
 

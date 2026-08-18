@@ -50,16 +50,24 @@ def extract_product_keywords(text_or_url: str) -> str:
     return text_or_url
 
 
-async def generate_script_and_keywords(product_text: str, gemini_api_key: str, lang: str = "en") -> dict:
+async def generate_script_and_keywords(product_input, gemini_api_key: str, lang: str = "en") -> dict:
     """Usa a API do Gemini 3.5 Flash para gerar roteiro, palavras-chave e prompts visuais para a IA."""
-    product_name = extract_product_keywords(product_text)
+    if isinstance(product_input, dict):
+        product_name = product_input.get("name") or extract_product_keywords(product_input.get("raw_text", ""))
+        product_desc = product_input.get("description", "")
+    else:
+        product_name = extract_product_keywords(str(product_input))
+        product_desc = ""
+
     target_lang = LANG_NAMES.get(lang, "English")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
 
+    desc_context = f"\n    Product Description / Features: {product_desc}" if product_desc else ""
+
     prompt = f"""
     You are an expert short-form video copywriter for TikTok and Instagram Reels UGC (User Generated Content) ads.
-    Create a viral 30-second script in {target_lang} for this exact product: "{product_name}".
+    Create a viral 30-second script in {target_lang} for this exact product: "{product_name}".{desc_context}
 
     Respond STRICTLY with a JSON object in this exact format (no markdown, no code blocks, just raw JSON):
     {{
@@ -298,7 +306,7 @@ def render_final_video(audio_path: str, video_clips: list, output_mp4: str, srt_
     return os.path.exists(output_mp4)
 
 
-async def create_video_pipeline(product_text: str, config: dict, work_dir: str = "/tmp/video_work"):
+async def create_video_pipeline(product_input, config: dict, work_dir: str = "/tmp/video_work"):
     """Orquestra o pipeline completo de geração de vídeo com Pollinations.ai."""
     os.makedirs(work_dir, exist_ok=True)
 
@@ -309,10 +317,13 @@ async def create_video_pipeline(product_text: str, config: dict, work_dir: str =
     if not gemini_key:
         raise ValueError("Chave da Gemini API é obrigatória em /start -> Configurar APIs.")
 
-    affiliate_url = extract_url(product_text)
+    if isinstance(product_input, dict):
+        affiliate_url = product_input.get("link") or extract_url(product_input.get("raw_text", ""))
+    else:
+        affiliate_url = extract_url(str(product_input))
 
     # 1. Roteiro, palavras-chave e prompts visuais da IA
-    script_data = await generate_script_and_keywords(product_text, gemini_key, lang=lang)
+    script_data = await generate_script_and_keywords(product_input, gemini_key, lang=lang)
 
     # 2. Gera áudio
     audio_path = os.path.join(work_dir, "narration.mp3")
