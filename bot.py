@@ -19,6 +19,7 @@ from video_engine import create_video_pipeline
 # Estados do ConversationHandler
 WAITING_API_VALUE = 1
 WAITING_PRODUCT_INPUT = 2
+WAITING_EDIT_CAPTION = 3
 
 LANG_LABELS = {
     "en": "🇺🇸 English",
@@ -79,7 +80,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "menu_apis":
         gemini_status = "✅ Definida" if cfg.get("gemini_api_key") else "❌ Pendente"
-        pexels_status = "✅ Definida" if cfg.get("pexels_api_key") else "❌ Pendente"
+        pexels_status = "✅ Definida (Opcional)" if cfg.get("pexels_api_key") else "⚪ Opcional"
 
         keyboard = [
             [InlineKeyboardButton(f"Gemini API ({gemini_status})", callback_data="set_gemini")],
@@ -87,7 +88,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ Voltar", callback_data="menu_main")],
         ]
         await query.edit_message_text(
-            "🔑 *Configuração de Chaves de API*\n\nClique em uma opção abaixo para ver as instruções e alterar:",
+            "🔑 *Configuração de Chaves de API*\n\n"
+            "• *Gemini API*: Obrigatória (geração de roteiro e prompts visuais de IA).\n"
+            "• *Pexels API*: Opcional (usada como reserva caso a IA do Pollinations oscile).\n\n"
+            "Clique para alterar:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown",
         )
@@ -161,24 +165,26 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. ⚙️ Reiniciando o serviço...",
             parse_mode="Markdown",
         )
-        
-        update_cmd = f"cd \"{bot_dir}\" && git fetch --all && git reset --hard origin/main"
+
+        update_cmd = f'cd "{bot_dir}" && git fetch --all && git reset --hard origin/main'
         if os.path.exists(os.path.join(bot_dir, "requirements.txt")):
             update_cmd += " && pip install -r requirements.txt -q"
         update_cmd += " && (sudo systemctl restart dropship-bot || echo 'Serviço reiniciado')"
-        
+
         subprocess.Popen(update_cmd, shell=True)
 
     elif data == "menu_main":
         await start_cmd(update, context)
 
     elif data == "post_video":
+        pending_caption = context.user_data.get("pending_caption", "")
         await query.edit_message_caption(
-            caption="🚀 *Vídeo aprovado e enviado para a fila de publicação automatizada!*",
+            caption=f"🚀 *Vídeo Aprovado e Enviado para a Fila!*\n\n📝 *Legenda Final:*\n{pending_caption}",
             parse_mode="Markdown",
         )
 
     elif data == "discard_video":
+        context.user_data.pop("pending_caption", None)
         await query.edit_message_caption(
             caption="🗑️ *Vídeo descartado.*",
             parse_mode="Markdown",
@@ -192,8 +198,8 @@ async def prompt_product_input(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     await query.message.reply_text(
-        "📦 *Envie o Produto*\n\n"
-        "Envie o **link da Amazon/AliExpress** ou digite o **nome do produto** com uma breve descrição.\n\n"
+        "📦 *Envie o Produto ou Link de Afiliado*\n\n"
+        "Envie o **link da Amazon/AliExpress** (link de afiliado) ou digite o **nome do produto**.\n\n"
         "_(Envie /cancelar para voltar ao menu)_",
         parse_mode="Markdown",
     )
@@ -205,15 +211,18 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
     product_text = update.message.text.strip()
     cfg = load_config()
 
-    if not cfg.get("gemini_api_key") or not cfg.get("pexels_api_key"):
+    if not cfg.get("gemini_api_key"):
         await update.message.reply_text(
-            "⚠️ *Atenção:* Por favor, defina a Gemini API Key e Pexels API Key no menu **⚙️ Configurar APIs** antes de gerar um vídeo.",
+            "⚠️ *Atenção:* Por favor, defina a Gemini API Key no menu **⚙️ Configurar APIs** antes de gerar um vídeo.",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
 
     msg_status = await update.message.reply_text(
-        "⏳ *Gerando vídeo...*\n\n1. 🧠 Criando roteiro via Gemini 3.5...\n2. 🎙️ Sintetizando narração neural e legendas...\n3. 🎬 Baixando B-roll e renderizando MP4...",
+        "⏳ *Gerando vídeo com IA Pollinations...*\n\n"
+        "1. 🧠 Criando roteiro e visuais do produto via Gemini...\n"
+        "2. 🎨 Gerando imagens de IA 1080x1920 via Pollinations.ai...\n"
+        "3. 🎙️ Sintetizando narração neural, legendas e animação Ken Burns 3D...",
         parse_mode="Markdown",
     )
 
@@ -222,11 +231,14 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         video_path = result["video_path"]
         caption_text = result["caption"]
 
+        context.user_data["pending_caption"] = caption_text
+
         keyboard = [
             [
                 InlineKeyboardButton("🚀 Aprovar e Postar", callback_data="post_video"),
-                InlineKeyboardButton("❌ Descartar", callback_data="discard_video"),
-            ]
+                InlineKeyboardButton("✏️ Editar Legenda", callback_data="edit_caption"),
+            ],
+            [InlineKeyboardButton("❌ Descartar", callback_data="discard_video")],
         ]
 
         await msg_status.delete()
@@ -234,7 +246,7 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
         with open(video_path, "rb") as video_file:
             await update.message.reply_video(
                 video=video_file,
-                caption=f"🎬 *Preview do Vídeo Renderizado*\n\n📝 *Legenda recomendada:*\n{caption_text}",
+                caption=f"🎬 *Preview do Vídeo Gerado*\n\n📝 *Legenda recomendada (com link):*\n{caption_text}",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown",
             )
@@ -245,6 +257,45 @@ async def process_product_input(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode="Markdown",
         )
 
+    return ConversationHandler.END
+
+
+# --- FLUXO DE EDIÇÃO DE LEGENDA ---
+async def prompt_edit_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Solicita a nova legenda ao usuário."""
+    query = update.callback_query
+    await query.answer()
+
+    current_caption = context.user_data.get("pending_caption", "")
+
+    await query.message.reply_text(
+        "✏️ *Editar Legenda & Título*\n\n"
+        "Envie o novo texto completo da legenda (incluindo seu link de afiliado e hashtags).\n\n"
+        f"📋 *Legenda Atual:*\n`{current_caption}`\n\n"
+        "_(Envie /cancelar para manter a legenda atual)_",
+        parse_mode="Markdown",
+    )
+    return WAITING_EDIT_CAPTION
+
+
+async def save_edited_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Salva a nova legenda editada pelo usuário."""
+    new_caption = update.message.text.strip()
+    context.user_data["pending_caption"] = new_caption
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🚀 Aprovar e Postar", callback_data="post_video"),
+            InlineKeyboardButton("✏️ Editar Legenda", callback_data="edit_caption"),
+        ],
+        [InlineKeyboardButton("❌ Descartar", callback_data="discard_video")],
+    ]
+
+    await update.message.reply_text(
+        f"✅ *Legenda Atualizada com Sucesso!*\n\n📝 *Nova Legenda:*\n{new_caption}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
     return ConversationHandler.END
 
 
@@ -266,11 +317,11 @@ async def ask_api_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "_(Envie /cancelar a qualquer momento para retornar)_"
         ),
         "pexels": (
-            "🔑 *Como obter a Pexels API Key:*\n\n"
+            "🔑 *Como obter a Pexels API Key (Opcional):*\n\n"
             "1️⃣ Acesse o [Pexels API Documentation](https://www.pexels.com/api/).\n"
             "2️⃣ Crie uma conta gratuita ou faça login.\n"
-            "3️⃣ Clique no botão **'Your API Key'** (ou solicite acesso gratuito).\n"
-            "4️⃣ Copie a chave alfanumérica e **responda enviando-a aqui nesta conversa**.\n\n"
+            "3️⃣ Clique no botão **'Your API Key'**.\n"
+            "4️⃣ Copie a chave e responda enviando-a aqui.\n\n"
             "_(Envie /cancelar a qualquer momento para retornar)_"
         ),
         "yt": (
@@ -347,10 +398,12 @@ def main():
         entry_points=[
             CallbackQueryHandler(prompt_product_input, pattern="^menu_generate$"),
             CallbackQueryHandler(ask_api_input, pattern="^set_(gemini|pexels|yt|tiktok)$"),
+            CallbackQueryHandler(prompt_edit_caption, pattern="^edit_caption$"),
         ],
         states={
             WAITING_API_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_api_input)],
             WAITING_PRODUCT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_product_input)],
+            WAITING_EDIT_CAPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edited_caption)],
         },
         fallbacks=[CommandHandler("cancelar", cancel_cmd)],
     )
