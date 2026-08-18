@@ -58,8 +58,8 @@ async def generate_script_and_keywords(product_text: str, gemini_api_key: str, l
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={gemini_api_key}"
 
     prompt = f"""
-    You are an expert short-form video copywriter for TikTok and Instagram Reels.
-    Create a viral 30-second script in {target_lang} for this product: "{product_name}".
+    You are an expert short-form video copywriter for TikTok and Instagram Reels UGC (User Generated Content) ads.
+    Create a viral 30-second script in {target_lang} for this exact product: "{product_name}".
 
     Respond STRICTLY with a JSON object in this exact format (no markdown, no code blocks, just raw JSON):
     {{
@@ -67,14 +67,15 @@ async def generate_script_and_keywords(product_text: str, gemini_api_key: str, l
         "script": "Full script to be read aloud (30s)",
         "keywords": ["simple_single_word1", "simple_single_word2", "simple_single_word3"],
         "visual_prompts": [
-            "Detailed English image prompt 1 of {product_name} in a modern sleek environment, 8k product photography, viral TikTok style, professional lighting",
-            "Detailed English image prompt 2 showing {product_name} in active use, cinematic, photorealistic",
-            "Detailed English image prompt 3 close up shot of {product_name}, studio lighting, ultra clean product aesthetic"
+            "A happy everyday person (man or woman) in casual clothes holding and actively demonstrating this product: {product_name}, real UGC style, 8k resolution, authentic TikTok video screenshot",
+            "Close up of hands of an everyday person using and showing how {product_name} works, bright natural home lighting, realistic product demonstration",
+            "An excited customer (young adult) smiling while using {product_name} in a realistic lifestyle home environment, authentic UGC product review aesthetic"
         ],
         "caption": "TikTok caption with hashtags"
     }}
 
-    IMPORTANT for "keywords": Use single, common English search terms (e.g., "kitchen", "cleaning", "gadget", "snack", "technology", "home").
+    IMPORTANT for "visual_prompts": Every single visual prompt MUST feature a real person (man or woman) actively holding, demonstrating, or using the "{product_name}". Never show an empty background or abstract scene.
+    IMPORTANT for "keywords": Use single, common English search terms (e.g., "person", "lifestyle", "gadget", "home", "technology").
     """
 
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
